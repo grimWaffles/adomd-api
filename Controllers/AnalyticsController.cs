@@ -7,6 +7,10 @@ using System.Threading.Tasks;
 using Microsoft.AnalysisServices.AdomdClient;
 using System.Text;
 using System.Xml;
+using System.Net;
+using System.Net.Http;
+using Newtonsoft.Json;
+using System.IO;
 
 namespace ADOMD.Controllers
 {
@@ -14,17 +18,31 @@ namespace ADOMD.Controllers
     [ApiController]
     public class AnalyticsController : ControllerBase
     {
-        private string connString { get; set; }
-        private string defaultQuery { get; set; }
-
+        private string ConnString { get; set; }
+        private string DefaultQuery { get; set; }
+        private string QuerySecond{ get; set; }
         public AnalyticsController()
         {
-            this.connString = "Data Source=DESKTOP-7FOU4BG; Catalog=Cube Basics 3";
+            this.ConnString = "Data Source=DESKTOP-7FOU4BG; Catalog=Cube Basics 3";
             
-            this.defaultQuery= "select non empty({[Measures].[Total Product Cost],[Measures].[Order Quantity],[Measures].[Sales Amount]}) on  columns," +
-                                "({[Due Date].[Calendar Year].&[2011]:null}," +
-                                "{[Due Date].[English Month Name].[English Month Name]}) on rows " +
-                                 "from[Adventure Works DW2016]";
+            //This is one big 11second query
+            this.DefaultQuery= "select non empty {[Measures].[Sales Amount],[Measures].[Order Quantity],[Measures].[Tax Amt]} on columns,"+
+
+                "( {[Dim Sales Territory 1].[Sales Territory Key].[Sales Territory Key]}, {[Dim Product 1].[Product Key].[Product Key]}," +
+                "{[Due Date].[Calendar Year].&[2014]," +
+                "[Due Date].[Calendar Year].&[2013],"+
+                "[Due Date].[Calendar Year].&[2012],"+
+                "[Due Date].[Calendar Year].&[2011]},"+
+
+                "{[Due Date].[English Month Name].&[January]," +
+                "[Due Date].[English Month Name].&[February]," +
+                "[Due Date].[English Month Name].&[March]," +
+                "[Due Date].[English Month Name].&[April]}"+
+                ") on rows "+
+
+                "from[Adventure Works DW2016]; ";
+
+            this.QuerySecond = "select {[Measures].[Sales Amount]} on columns,[Due Date].[Calendar Year].[Calendar Year] on rows from[Adventure Works DW2016]";
         }
 
         //returns the information of all cubes in the server
@@ -35,7 +53,8 @@ namespace ADOMD.Controllers
         {
             StringBuilder cubeInformation = new StringBuilder();
             
-            AdomdConnection conn = new AdomdConnection(connString);
+            AdomdConnection conn = new AdomdConnection(ConnString);
+            
             conn.Open();
 
             //Cube objects are CubeDef here
@@ -62,17 +81,17 @@ namespace ADOMD.Controllers
         }
 
         //Fetches data using a cellset from the analysis server
-        //https://localhost:*portnumber*/api/analytics/cellset --is the complete link
+        //GET https://localhost:*portnumber*/api/analytics/cellset --is the complete link
         [HttpGet]
         [Route("cellset")]
-        public string UseCellSet()
+        public string GetCellSetInJson()
         {
             StringBuilder result = new StringBuilder();
 
-            AdomdConnection conn = new AdomdConnection(connString);
+            AdomdConnection conn = new AdomdConnection(ConnString);
             conn.Open();
 
-            string commandText = defaultQuery;
+            string commandText = DefaultQuery;
 
             AdomdCommand adomdCommand = new AdomdCommand(commandText, conn);
 
@@ -103,11 +122,17 @@ namespace ADOMD.Controllers
             {
                 //add the  caption like before
                 result.Append(tupleRows[row].Members[0].Caption+'\t');
+                result.Append(tupleRows[row].Members[1].Caption + '\t');
+                result.Append(tupleRows[row].Members[2].Caption + '\t');
+                result.Append(tupleRows[row].Members[3].Caption + '\t');
 
                 //foreach col in the row append the result
-                for(int col = 0; col < tupleColumns.Count; col++)
+                for (int col = 0; col < tupleColumns.Count; col++)
                 {
-                    result.Append(cs.Cells[col, row].FormattedValue + '\t');
+                    if (cs.Cells[col, row].FormattedValue != null || cs.Cells[col, row].FormattedValue!="")
+                    {
+                        result.Append(cs.Cells[col, row].FormattedValue + '\t');
+                    }
                 }
                 result.AppendLine();
             }
@@ -119,14 +144,63 @@ namespace ADOMD.Controllers
             //return new JsonResult(new { result=result.ToString() });
         }
 
+
+        //NEW
+        //Fetches data using a cellset from the analysis server
+        //GET https://localhost:*portnumber*/api/analytics/cstojson --is the complete link
+        [HttpGet]
+        [Route("cstojson")]
+        public IActionResult ConvertToJson()
+        {
+            AdomdConnection conn = new AdomdConnection(ConnString);
+            conn.Open();
+
+            string commandText = "select {[Measures].[Sales Amount]} on columns,[Due Date].[Calendar Year].[Calendar Year] on rows from[Adventure Works DW2016]";
+
+            AdomdCommand adomdCommand = new AdomdCommand(commandText, conn);
+
+            CellSet cs = adomdCommand.ExecuteCellSet();
+
+            var contractResolver = new CellSetContractResolver();
+            // we want Axes and Cells to be serialized from the CellSet
+            contractResolver.AddInclude("CellSet", new List<string>() {
+                    "Axes",
+                    "Cells"
+                });
+
+            //In the Asix lets Serialize Set and Name properties
+            contractResolver.AddInclude("Axis", new List<string>() {
+                    "Set",
+                    "Name"
+                });
+
+            //... and so on, whatever we need to include in the serialized JSON
+            var settings = new JsonSerializerSettings()
+            {
+                ContractResolver = contractResolver,
+                ReferenceLoopHandling = ReferenceLoopHandling.Ignore
+            };
+
+            settings.Converters.Add(new CellSetJsonConverter
+                         (cs.Axes[0].Set.Tuples.Count, cs.Axes[1].Set.Tuples.Count));
+
+            string output = JsonConvert.SerializeObject
+                                   (cs, Newtonsoft.Json.Formatting.Indented, settings);
+           
+
+            conn.Close();
+
+            return new JsonResult(output);
+        }
+
         [HttpGet]
         [Route("xmlreader")]
         public string UseXmlReader()
         {
-            AdomdConnection conn = new AdomdConnection(connString);
+            AdomdConnection conn = new AdomdConnection(ConnString);
             conn.Open();
 
-            string commandText = defaultQuery;
+            string commandText = DefaultQuery;
 
             AdomdCommand adomdCommand = new AdomdCommand(commandText, conn);
 
@@ -138,38 +212,33 @@ namespace ADOMD.Controllers
             return result;
         }
 
-        //API  not  working
+        //API not working
         //Fetches data using a AdomdDataReader from the analysis server
         //https://localhost:*portnumber*/api/analytics/adomdreader --is the complete link
         [HttpGet]
         [Route("adomdreader")]
-        public IActionResult UseAdoReader()
+        public List<string> UseAdoReader()
         {
-            AdomdConnection conn = new AdomdConnection(connString);
+            AdomdConnection conn = new AdomdConnection(ConnString);
             conn.Open();
 
-            string commandText = defaultQuery;
+            string commandText = "select {[Measures].[Sales Amount]} on columns,[Due Date].[Calendar Year].[Calendar Year] on rows from[Adventure Works DW2016]";
 
             AdomdCommand adomdCommand = new AdomdCommand(commandText, conn);
 
-            AdomdDataReader dr = adomdCommand.ExecuteReader();
+            AdomdDataReader dataReader = adomdCommand.ExecuteReader();
 
-            StringBuilder str = new StringBuilder();
+            var str = new List<string>();
 
-            if (dr == null)
+            while (dataReader.Read())
             {
-                return new JsonResult(new { message = "This is not working." });
+                str.Add(dataReader[0].ToString() + "    " + dataReader[1].ToString());
             }
 
-            while (dr.Read())
-            {
-                str.Append(dr.GetString(0) + "," + dr.GetString(1) + dr.GetString(2) + dr.GetString(3) + dr.GetString(4) + '\n'); //Error here
-            }
-
-            dr.Close();
+            dataReader.Close();
             conn.Close();
 
-            return new JsonResult(new { str });
+            return str;
         }
     }
 }

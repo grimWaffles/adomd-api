@@ -43,6 +43,10 @@
             "Microsoft.AnalysisServices.AdomdClient.NetCore.retail.amd64": {
               "target": "Package",
               "version": "[19.20.1, )"
+            },
+            "Newtonsoft.Json": {
+              "target": "Package",
+              "version": "[13.0.1, )"
             }
           },
           "imports": [
